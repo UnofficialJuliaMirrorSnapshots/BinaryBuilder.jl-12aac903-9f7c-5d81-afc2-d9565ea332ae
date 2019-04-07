@@ -1,0 +1,75 @@
+## Documentation: http://docs.travis-ci.com/user/languages/julia/
+language: julia
+os:
+  - linux
+  # We don't have docker on OSX on travis at the moment... :(
+  #- osx
+julia:
+  - 1.0
+ #- nightly
+notifications:
+  email: false
+git:
+  depth: 99999999
+sudo: required
+
+matrix:
+  allow_failures:
+    - julia: nightly
+
+env:
+  global:
+    - BINARYBUILDER_AUTOMATIC_APPLE=true
+    - BINARYBUILDER_FULL_SHARD_TEST=false
+cache:
+  directories:
+    - deps/downloads
+
+jobs:
+  include:
+    # Add a job that uses squashfs and also runs the package tests
+    - julia: 1.0
+      env:
+        - BINARYBUILDER_USER_SQUASHFS=true
+        - BINARYBUILDER_PACKAGE_TESTS=true
+    
+    # Add a job that doesn't use the squashfs but otherwise does normal tests
+    # We don't have the disk space available to do a full shard test here.
+    - julia: 1.0
+      env:
+        - BINARYBUILDER_USE_SQUASHFS=false
+
+    # Add a job that uses the privileged builder
+    - julia: 1.0
+      env:
+        - BINARYBUILDER_RUNNER=privileged
+
+    # Add a job that uses the docker builder (disabled for now, because it's not working on Travis)
+    - julia: 1.0
+      env:
+        - BINARYBUILDER_RUNNER=docker
+
+script:
+   - julia --project -e 'using Pkg; Pkg.build("BinaryBuilder")'
+   - if [ ${TEST_SANDBOX:-false} = true ]; then
+         julia -e 'cd("deps"); run(`gcc -std=c99 -o /tmp/sandbox sandbox.c`)';
+     fi
+   - julia --project -e 'using Pkg; Pkg.add(PackageSpec(name="BinaryProvider", rev="master"))'
+   - julia --project --color=yes --check-bounds=yes -e 'using Pkg; Pkg.test("BinaryBuilder", coverage=true)'
+
+# Ironic.  He could provide binaries for others but not himself...
+addons:
+  apt:
+    packages:
+      - curl
+      - wget
+      - p7zip-full
+      - tar
+      - gzip
+
+after_success:
+  # push coverage results to Codecov
+  - julia -e 'using Pkg; Pkg.add("Coverage"); using Coverage; Codecov.submit(Codecov.process_folder())'
+  # Build docs
+  - julia -e 'using Pkg; Pkg.add("Documenter")'
+  - julia -e 'using Pkg; include(joinpath("docs", "make.jl"))'

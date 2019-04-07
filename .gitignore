@@ -1,0 +1,6 @@
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+global_prefix
+.vscode/
+deps/build.log
