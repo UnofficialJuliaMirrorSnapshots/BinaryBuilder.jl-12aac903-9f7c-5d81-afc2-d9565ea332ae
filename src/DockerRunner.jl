@@ -14,7 +14,18 @@ mutable struct DockerRunner <: Runner
 end
 
 docker_image(version::VersionNumber) = "julia_binarybuilder_rootfs:v$(version)"
-docker_image(rootfs::CompilerShard) = docker_image(rootfs.version)
+function docker_image(rootfs::CompilerShard)
+    name = artifact_name(rootfs)
+    artifacts_toml = joinpath(@__DIR__, "..", "Artifacts.toml")
+    hash = artifact_hash(name, artifacts_toml; platform=rootfs.host)
+    return string(
+        "julia_binarybuilder_rootfs:",
+        "v",
+        string(rootfs.version),
+        "-",
+        string(bytes2hex(hash.bytes))[end-5:end],
+    )
+end
 
 """
     import_docker_image(rootfs::CompilerShard; verbose::Bool = false)
@@ -47,6 +58,10 @@ function import_docker_image(rootfs::CompilerShard, workspace_root::String; verb
     ); stdout=devnull))
     return
 end
+
+# Helper function to delete a previously-imported docker image
+delete_docker_image() = delete_docker_image(first(choose_shards(platform_key_abi())))
+delete_docker_image(rootfs::CompilerShard) = success(`docker rmi -f $(docker_image(rootfs))`)
 
 function DockerRunner(workspace_root::String;
                       cwd = nothing,
@@ -135,24 +150,17 @@ function chown_cleanup(dr::DockerRunner; verbose::Bool = false)
     run(`$(sudo_cmd()) chown $(getuid()):$(getgid()) -R $(dr.workspace_root)`)
 end
 
-function Base.run(dr::DockerRunner, cmd, logpath::AbstractString; verbose::Bool = false, tee_stream=stdout)
+function Base.run(dr::DockerRunner, cmd, logger::IO=stdout; verbose::Bool=false, tee_stream=stdout)
     did_succeed = true
     docker_cmd = `$(dr.docker_cmd) $(docker_image(dr.shards[1])) $(cmd)`
-    if verbose
-        @debug("About to run: $(docker_cmd)")
-    end
+    @debug("About to run: $(docker_cmd)")
+
     oc = OutputCollector(docker_cmd; verbose=verbose, tee_stream=tee_stream)
     did_succeed = wait(oc)
 
-    if !isempty(logpath)
-        # Write out the logfile, regardless of whether it was successful
-        mkpath(dirname(logpath))
-        open(logpath, "w") do f
-            # First write out the actual command, then the command output
-            println(f, cmd)
-            print(f, merge(oc))
-        end
-    end
+    # First write out the actual command, then the command output
+    println(logger, cmd)
+    print(logger, merge(oc))
 
     # Cleanup permissions, if we need to.
     chown_cleanup(dr; verbose=verbose)

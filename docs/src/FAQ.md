@@ -27,3 +27,60 @@ At the time of writing, we support Linux (x86_64, i686, armv7l, aarch64, ppc64le
 ### At line XXX, ABORTED (Operation not permitted)!
 
 Some linux distributions have a bug in their `overlayfs` implementation that prevents us from mounting overlay filesystems within user namespaces.  See [this Ubuntu kernel bug report](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/1531747) for a description of the situation and how Ubuntu has patched it in their kernels.  To work around this, you can launch `BinaryBuilder.jl` in "privileged container" mode.  BinaryBuilder should auto-detect this situation, however if the autodetection is not working or you want to silence the warning, you can set the `BINARYBUILDER_RUNNER` environment variable to `privileged`.  Unfortunately, this involves running `sudo` every time you launch into a BinaryBuilder session, but on the other hand, this successfully works around the issue on distributions such as Arch linux.
+
+### I have to build a very small project without a Makefile, what do I have to do?
+
+What BinaryBuilder needs is to find the relevant file (shared libraries, or executables, etc...) organised under the `$prefix` directory: libraries should go to `$prefix/lib` (`$prefix/bin` on Windows), executables to `$prefix/bin`.  You may need to create those directory.  You are free to choose whether to create a simple Makefile to build the project or to do everything within the `build_tarballs.jl` script.
+When the script completes, BinaryBuilder expects to find at least one artifact _built for the expected architecture_ in either `$prefix/lib` or `$prefix/bin`.
+Remember also that you should use the standard environment variables like `CC`, `CXX`, `CFLAGS`, `LDFLAGS` as appropriate in order to cross compile.  See the list of variables in the [Tips for Building Packages](build_tips.md) section.
+
+### I love the wizard, but now I want to break free: can I build the tarballs without it?
+
+The `build_tarballs.jl` script can be used as a command line utility, it takes a few options and as argument the list of triplets of the targets.  You can find more information about the syntax of the script with
+```
+julia build_tarballs.jl --help
+```
+Instead of using the wizard, you can adapt for a new library a `build_tarballs.jl` script originally written for another library.  Then, you can build the tarballs with
+```
+julia --color=yes build_tarballs.jl --debug --verbose
+```
+The `--debug` option will drop you into the BinaryBuilder interactive shell if an error occurs.  If the build fails, after finding out the steps needed to fix the build you have to manually update the script in `build_tarballs.jl`.  You should run again the above command to make sure that everything is actually working.
+
+Since `build_tarballs.jl` takes as argument the comma-separated list of targets for which to build the tarballs, you can select only a few of them.  For example, with
+```
+julia --color=yes build_tarballs.jl --debug --verbose aarch64-linux-musl,arm-linux-musleabihf
+```
+you'll run the build script only for the `aarch64-linux-musl` and `arm-linux-musleabihf` targets.
+
+If you decide to use this workflow, however, you will need to manually open pull requests for [Yggdrasil](https://github.com/JuliaPackaging/Yggdrasil/).
+
+### Can I open a shell in a particular build environment for doing some quick tests?
+
+Yes!  You can use `BinaryBuilder.runshell(platform)` to quickly start a shell in the current directory, without having to set up a working `build_tarballs.jl` script.  For example,
+```
+julia -e 'using BinaryBuilder; BinaryBuilder.runshell(Windows(:i686))'
+```
+will open a shell in a Windows 32-bit buid environment, without any source loaded.  The current working directory of your system will be mounted on `${WORKSPACE}` within this BinaryBuilder environment.
+
+### Can I install packages in the build environment?
+
+Yes, but it's unlikely that you'll need to.  The build environment is based on Alpine Linux (triplet: `x86_64-linux-musl`) so you can use [`apk`](https://wiki.alpinelinux.org/wiki/Alpine_Linux_package_management) to install packages in it.  However, if you need runtime libraries or programs for the target system these packages won't help you.  The package manager is useful only to install utilities, tools or libraries that are needed exclusively at compile time on the build system.
+
+### What are those numbers in the list of sources?  How do I get them?
+
+The list source of sources is a vector of dictionaries, whose key is the URL of the source and whose value is its hash.  What kind of hash depends on what the source actually is:
+
+* If the source is a file to be downloaded, the hash is a 64-character SHA256 checksum.  If you have a copy of that file, you can compute the hash in Julia with
+  ```julia
+  using SHA
+  open(path_to_the_file, "r") do f
+       bytes2hex(sha256(f))
+  end
+  ```
+  where `path_to_the_file` is a string with the path to the file.  Alternatively, you can use the command line utilities `curl` and `sha256sum` to compute the hash of a remote file:
+  ```
+  $ curl -L http://example.org/file.tar.gz | shasum -a 256
+  ```
+  replacing `http://example.org/file.tar.gz` with the actual URL of the file you want to download.
+
+* If the source is a Git repository, the hash is the 40-character SHA1 hash of the revision you want to checkout.  For reproducibility you must indicate a specific revision, and not a branch or tag name, which are moving targets.

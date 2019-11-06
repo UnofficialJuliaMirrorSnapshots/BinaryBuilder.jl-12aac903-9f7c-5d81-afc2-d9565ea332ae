@@ -10,12 +10,12 @@
 
         files = collect_files(prefix)
         @test length(files) == 2
-        @test f in files
-        @test f_link in files
+        @test realpath(f) in files
+        @test realpath(f_link) in files
 
         collapsed_files = collapse_symlinks(files)
         @test length(collapsed_files) == 1
-        @test f in collapsed_files
+        @test realpath(f) in collapsed_files
     end
 end
 
@@ -31,28 +31,34 @@ end
 end
 
 @testset "Target properties" begin
-    for t in ["i686-linux-gnu", "i686-w64-mingw32", "arm-linux-gnueabihf"]
-        @test BinaryBuilder.target_nbits(t) == "32"
+    for p in [Linux(:i686), Windows(:i686), Linux(:armv7l)]
+        @test BinaryBuilder.nbits(p) == 32
     end
 
-    for t in ["x86_64-linux-gnu", "x86_64-w64-mingw32", "aarch64-linux-gnu",
-              "powerpc64le-linux-gnu", "x86_64-apple-darwin14"]
-        @test BinaryBuilder.target_nbits(t) == "64"
+    for p in [Linux(:x86_64), Windows(:x86_64), Linux(:aarch64),
+              Linux(:powerpc64le), MacOS()]
+        @test BinaryBuilder.nbits(p) == 64
     end
 
-    for t in ["x86_64-linux-gnu", "x86_64-apple-darwin14", "i686-w64-mingw32"]
-        @test BinaryBuilder.target_proc_family(t) == "intel"
+    for p in [Linux(:x86_64), MacOS(), Windows(:i686)]
+        @test BinaryBuilder.proc_family(p) == :intel
     end
-    for t in ["aarch64-linux-gnu", "arm-linux-gnueabihf"]
-        @test BinaryBuilder.target_proc_family(t) == "arm"
+    for p in [Linux(:aarch64; libc=:musl), Linux(:armv7l)]
+        @test BinaryBuilder.proc_family(p) == :arm
     end
-    @test BinaryBuilder.target_proc_family("powerpc64le-linux-gnu") == "power"
+    @test BinaryBuilder.proc_family(Linux(:powerpc64le)) == :power
 
-    for t in ["aarch64-linux-gnu", "x86_64-unknown-freebsd11.1"]
-        @test BinaryBuilder.target_dlext(t) == "so"
+    for p in [Linux(:aarch64), FreeBSD(:x86_64)]
+        @test BinaryBuilder.dlext(p) == "so"
     end
-    @test BinaryBuilder.target_dlext("x86_64-apple-darwin14") == "dylib"
-    @test BinaryBuilder.target_dlext("i686-w64-mingw32") == "dll"
+    @test BinaryBuilder.dlext(MacOS()) == "dylib"
+    @test BinaryBuilder.dlext(Windows(:i686)) == "dll"
+
+    for p in [Linux(:x86_64), FreeBSD(:x86_64), Linux(:powerpc64le), MacOS()]
+        @test BinaryBuilder.exeext(p) == ""
+    end
+    @test BinaryBuilder.exeext(Windows(:x86_64)) == ".exe"
+    @test BinaryBuilder.exeext(Windows(:i686)) == ".exe"
 end
 
 @testset "UserNS utilities" begin
@@ -69,29 +75,81 @@ end
     end
 end
 
+# Is docker available?  If so, test that the docker runner works...
+if Sys.which("docker") != nothing
+    @testset "Docker Runner" begin
+        @testset "Docker image importing" begin
+            # First, delete the docker image, in case it already existed
+            BinaryBuilder.delete_docker_image()
+
+            # Next, import it and ensure that doesn't throw
+            rootfs = first(BinaryBuilder.choose_shards(platform))
+            mktempdir() do dir
+                @test BinaryBuilder.import_docker_image(rootfs, dir; verbose=true) === nothing
+            end
+
+            # Test that deleting the docker image suceeds, now that we know
+            # it exists
+            @test BinaryBuilder.delete_docker_image()
+        end
+
+        @testset "Docker hello world" begin
+            mktempdir() do dir
+                dr = BinaryBuilder.DockerRunner(dir; platform=Linux(:x86_64; libc=:musl))
+                iobuff = IOBuffer()
+                @test run(dr, `/bin/bash -c "echo test"`, iobuff)
+                seek(iobuff, 0)
+                # Test that we get the output we expect (e.g. the second line is `test`)
+                @test split(String(read(iobuff)), "\n")[2] == "test"
+            end
+        end
+    end
+end
+
+
 @testset "environment and history saving" begin
-    build_path = tempname()
-    mkpath(build_path)
-    prefix, ur = BinaryBuilder.setup_workspace(build_path, [], [], [], platform)
-    @test_throws ErrorException build(ur, "foo", libfoo_products(prefix), "MARKER=1\nexit 1", platform, prefix)
+    mktempdir() do temp_path
+        @test_throws ErrorException autobuild(
+            temp_path,
+            "this_will_fail",
+            v"1.0.0",
+            # No sources to speak of
+            [],
+            # Simple script that just sets an environment variable
+            """
+            MARKER=1
+            exit 1
+            """,
+            # Build for this platform
+            [platform],
+            # No products
+            Product[],
+            # No depenedencies
+            [],
+        )
 
-    # Ensure that we get a metadir, and that our history and .env files are in there!
-    metadir = joinpath(prefix.path, "..", "metadir")
-    @test isdir(metadir)
+        # build_path is the nonce'd build directory
+        build_path = joinpath(temp_path, "build", triplet(platform))
+        build_path = joinpath(build_path, first(readdir(build_path)))
 
-    hist_file = joinpath(metadir, ".bash_history")
-    env_file = joinpath(metadir, ".env")
-    @test isfile(hist_file)
-    @test isfile(env_file)
+        # Ensure that we get a metadir, and that our history and .env files are in there!
+        metadir = joinpath(build_path, "metadir")
+        @test isdir(metadir)
 
-    # Test that exit 1 is in .bash_history
-    @test occursin("\nexit 1\n", read(open(hist_file), String))
+        hist_file = joinpath(metadir, ".bash_history")
+        env_file = joinpath(metadir, ".env")
+        @test isfile(hist_file)
+        @test isfile(env_file)
 
-    # Test that MARKER=1 is in .env:
-    @test occursin("\nMARKER=1\n", read(open(env_file), String))
+        # Test that exit 1 is in .bash_history
+        @test occursin("\nexit 1\n", read(open(hist_file), String))
 
-    # Delete the build path
-    rm(build_path, recursive = true)
+        # Test that MARKER=1 is in .env:
+        @test occursin("\nMARKER=1\n", read(open(env_file), String))
+
+        # Delete the build path
+        rm(build_path, recursive = true)
+    end
 end
 
 @testset "Wizard Utilities" begin

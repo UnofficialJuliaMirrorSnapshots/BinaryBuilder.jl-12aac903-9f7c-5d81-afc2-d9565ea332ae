@@ -47,7 +47,7 @@ function ensure_soname(prefix::Prefix, path::AbstractString, platform::Platform;
     end
 
     # Skip if this file already contains an SONAME
-    rel_path = relpath(path, prefix.path)
+    rel_path = relpath(realpath(path), realpath(prefix.path))
     soname = get_soname(path)
     if soname != nothing
         if verbose
@@ -72,12 +72,13 @@ function ensure_soname(prefix::Prefix, path::AbstractString, platform::Platform;
         set_soname_cmd = `$install_name_tool -id $(soname) $(rel_path)`
     elseif Sys.islinux(platform) || Sys.isbsd(platform)
         patchelf = "/usr/bin/patchelf"
-        set_soname_cmd = `$patchelf --set-soname $(soname) $(rel_path)`
+        set_soname_cmd = `$patchelf $(patchelf_flags(platform)) --set-soname $(soname) $(rel_path)`
     end
 
     # Create a new linkage that looks like @rpath/$lib on OSX, 
-    logpath = joinpath(logdir(prefix), "set_soname_$(basename(rel_path))_$(soname).log")
-    retval = run(ur, set_soname_cmd, logpath; verbose=verbose)
+    retval = with_logfile(prefix, "set_soname_$(basename(rel_path))_$(soname).log") do io
+        run(ur, set_soname_cmd, io; verbose=verbose)
+    end
 
     if !retval
         @warn("Unable to set SONAME on $(rel_path)")

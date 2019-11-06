@@ -57,6 +57,32 @@ The toolchain file sets up several CMake environment variables for better cross-
   - Needs to copy *.dll files from `destdir/lib` to `destdir/bin` for windows; this also removes symlinks by using `cp -L`
   - Needs `-DCMAKE_FIND_ROOT_PATH="$WORKSPACE/destdir"`, so CMake's `find_library` can find libraries from KLU
 
+## Meson builds
+
+BinaryBuilder supports also building with Meson.  Since this is going to be a cross-compilation, you have to specify a Meson cross file:
+
+```sh
+meson --cross-file="${MESON_TARGET_TOOLCHAIN}"
+```
+
+After configuring the project with `meson`, you can then build and install it with
+
+```
+ninja -j${nproc}
+ninja install
+```
+
+The wizard automatically suggests using Meson if the `meson.build` file is present.
+
+Examples of builds performed with Meson include:
+
+* [gdk-pixbuf](https://github.com/JuliaPackaging/Yggdrasil/blob/2f3638292c99fa6032634517f8a1aa8360d6fe8d/G/gdk_pixbuf/build_tarballs.jl)
+  - Here meson uses platform-dependent options
+
+* [libepoxy](https://github.com/JuliaPackaging/Yggdrasil/blob/2f3638292c99fa6032634517f8a1aa8360d6fe8d/L/Libepoxy/build_tarballs.jl)
+  - This script modifies `c_args` in the Meson cross file in order to add an include directory
+
+* [xkbcommon](https://github.com/JuliaPackaging/Yggdrasil/blob/2f3638292c99fa6032634517f8a1aa8360d6fe8d/X/xkbcommon/build_tarballs.jl)
 
 ## Builds with binary dependencies
 
@@ -80,3 +106,45 @@ Examples of builders that depend on other binaries include:
 In the wizard, the `vim` editor is available for editing files. But, it doesn't leave any record in the build script. One generally needs to provide patch files or use something like `sed`. If a file needs patching, we suggest using `git` to add the entire worktree to a new repo, make the changes you need, then use `git diff -p` to output a patch that can be included alongside your build recipe.
 
 You can include local files like patches very easily by placing them within a `bundled/patches` nested directory, and then providing `"./bundled"` as one of the `sources` for your build.  See, for example, [`OpenBLAS`](https://github.com/JuliaPackaging/Yggdrasil/tree/029e588412f232f215e5e6a7564693d3dbf8e922/O/OpenBLAS).
+
+## Automatic environment variables
+
+The following environment variables are automatically set in the build environment and should be used to build the project.  Occasionally, you may need to tweak them (e.g., if you need to use GCC on macOS or FreeBSD, see the below.
+
+* `CC`: the C cross compiler
+* `CXX`: the C++ cross compiler
+* `FC`: the Fortran cross compiler
+* `OBJC`: the Objective-C cross compiler
+* `AR`: the archiver
+* `AS`: the assembler
+* `LD`: the linker
+* `NM`: the utility to list symbols from object files
+* `OBJDUMP`: the utility to display information from object files
+* `RANLIB`: the utility to generate index to archives
+* `CFLAGS`: options for the C compiler
+* `CXXFLAGS`: options for the C++ compiler
+* `LDFLAGS`: options for the linker
+* `PKG_CONFIG_PATH`: a colon-separated list of directories to search for `.pc` files
+* `PKG_CONFIG_SYSROOT_DIR`: modifies `-I` and `-L` to use the directories located in target sysroot
+
+The following variables are useful to control the build script over different target systems, but are not intended to be modified by the users:
+
+* `target`: the target platform
+* `nproc`: the number of processors of the host machine, useful for parallel building (e.g., `make -j${nproc}`)
+* `nbits`: number of bits of the target architecture (usually it is either 32 or 64)
+* `proc_family`: target processor family (e.g., "intel", "power", or "arm")
+* `dlext`: extension of the shared library on the target system.  It is "dll" for Windows, "dylib" for macOS, and "so" for the other Unix systems.
+
+## Using GCC on macOS and FreeBSD
+
+For these target systems Clang is the default compiler, however some programs may not be compatible with Clang.
+
+For programs built with CMake (see the [CMake build](#CMake-builds-1) section) you can use the GCC toolchain file that is in `${CMAKE_TARGET_TOOLCHAIN%.*}_gcc.cmake`.
+
+If the project that you want to build uses the GNU Build System (also knows as the Autotools), there isn't an automatic switch to use GCC, but you have to set the appropriate variables.  For example, this setting can be used to build most C/C++ programs with GCC for FreeBSD and macOS:
+```sh
+if [[ "${target}" == *-freebsd* ]] || [[ "${target}" == *-apple-* ]]; then
+    CC=gcc
+    CXX=g++
+fi
+```

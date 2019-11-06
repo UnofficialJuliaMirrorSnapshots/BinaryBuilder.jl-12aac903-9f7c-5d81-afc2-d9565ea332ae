@@ -239,6 +239,18 @@ function is_default_lib(lib, ::MachOHandle)
     return lowercase(basename(lib)) in default_libs
 end
 
+function patchelf_flags(p::Platform)
+    flags = []
+
+    # ppc64le and aarch64 have 64KB page sizes, don't muck up the ELF section load alignment
+    if arch(p) in (:powerpc64le, :aarch64)
+        append!(flags, ["--page-size", "65536"])
+    end
+
+    # We return arrays so that things interpolate properly
+    return flags
+end
+
 function relink_to_rpath(prefix::Prefix, platform::Platform, path::AbstractString,
                          old_libpath::AbstractString; verbose::Bool = false)
     ur = preferred_runner()(prefix.path; cwd="/workspace/", platform=platform)
@@ -251,12 +263,13 @@ function relink_to_rpath(prefix::Prefix, platform::Platform, path::AbstractStrin
         relink_cmd = `$install_name_tool -change $(old_libpath) @rpath/$(libname) $(rel_path)`
     elseif Sys.islinux(platform) || Sys.isbsd(platform)
         patchelf = "/usr/bin/patchelf"
-        relink_cmd = `$patchelf --replace-needed $(old_libpath) $(libname) $(rel_path)`
+        relink_cmd = `$patchelf $(patchelf_flags(platform)) --replace-needed $(old_libpath) $(libname) $(rel_path)`
     end
 
-    # Create a new linkage that looks like @rpath/$lib on OSX, 
-    logpath = joinpath(logdir(prefix), "relink_to_rpath_$(basename(rel_path)).log")
-    run(ur, relink_cmd, logpath; verbose=verbose)
+    # Create a new linkage that looks like @rpath/$lib on OSX
+    with_logfile(prefix, "relink_to_rpath_$(basename(rel_path)).log") do io
+        run(ur, relink_cmd, io; verbose=verbose)
+    end
 end
 
 # Only macOS needs to fix identity mismatches
@@ -285,8 +298,9 @@ function fix_identity_mismatch(prefix::Prefix, platform::MacOS, path::AbstractSt
     id_cmd = `$install_name_tool -id $(new_id) $(rel_path)`
 
     # Create a new linkage that looks like @rpath/$lib on OSX, 
-    logpath = joinpath(logdir(prefix), "fix_identity_mismatch_$(basename(rel_path)).log")
-    run(ur, id_cmd, logpath; verbose=verbose)
+    with_logfile(prefix, "fix_identity_mismatch_$(basename(rel_path)).log") do io
+        run(ur, id_cmd, io; verbose=verbose)
+    end
 end
 
 
@@ -350,9 +364,9 @@ function update_linkage(prefix::Prefix, platform::Platform, path::AbstractString
             rpaths = chomp_slashdot.(rpaths)
 
             rpath_str = join(rpaths, ':')
-            return `$patchelf --set-rpath $(rpath_str) $(rel_path)`
+            return `$patchelf $(patchelf_flags(platform)) --set-rpath $(rpath_str) $(rel_path)`
         end
-        relink = (op, np) -> `$patchelf --replace-needed $(op) $(np) $(rel_path)`
+        relink = (op, np) -> `$patchelf $(patchelf_flags(platform)) --replace-needed $(op) $(np) $(rel_path)`
     end
 
     # If the relative directory doesn't already exist within the RPATH of this
@@ -360,16 +374,16 @@ function update_linkage(prefix::Prefix, platform::Platform, path::AbstractString
     new_libdir = abspath(dirname(new_libpath) * "/")
     if !(new_libdir in canonical_rpaths(path))
         libname = basename(old_libpath)
-        logpath = joinpath(logdir(prefix), "update_rpath_$(basename(path))_$(libname).log")
         cmd = add_rpath(normalize_rpath(relpath(new_libdir, dirname(path))))
-        run(ur, cmd, logpath; verbose=verbose)
+        with_logfile(prefix, "update_rpath_$(basename(path))_$(libname).log") do io
+            run(ur, cmd, io; verbose=verbose)
+        end
     end
 
     # Create a new linkage that uses the RPATH and/or environment variables to find things.
     # This allows us to split things up into multiple packages, and as long as the
     # libraries that this guy is interested in have been `dlopen()`'ed previously,
     # (and have the appropriate SONAME) things should "just work".
-    logpath = joinpath(logdir(prefix), "update_linkage_$(basename(path))_$(basename(old_libpath)).log")
     if Sys.isapple(platform)
         # On MacOS, we need to explicitly add `@rpath/` before our library linkage path.
         # Note that this is still overridable through DYLD_FALLBACK_LIBRARY_PATH
@@ -380,7 +394,9 @@ function update_linkage(prefix::Prefix, platform::Platform, path::AbstractString
         new_libpath = basename(new_libpath)
     end
     cmd = relink(old_libpath, new_libpath)
-    run(ur, cmd, logpath; verbose=verbose)
+    with_logfile(prefix, "update_linkage_$(basename(path))_$(basename(old_libpath)).log") do io
+        run(ur, cmd, io; verbose=verbose)
+    end
 
     return new_libpath
 end

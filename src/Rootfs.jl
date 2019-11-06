@@ -1,4 +1,4 @@
-export supported_platforms, expand_gcc_versions, expand_gfortran_versions, expand_cxxstring_abis
+export supported_platforms, expand_gfortran_versions, expand_cxxstring_abis
 
 import Pkg.Artifacts: load_artifacts_toml, ensure_all_artifacts_installed
 
@@ -215,7 +215,7 @@ function mount(cs::CompilerShard, build_prefix::AbstractString; verbose::Bool = 
 
     # Ensure this artifact is on-disk; hard to mount it if it's not installed
     artifacts_toml = joinpath(dirname(@__DIR__), "Artifacts.toml")
-    ensure_artifact_installed(artifact_name(cs), artifacts_toml; platform=cs.host, verbose=verbose)
+    ensure_artifact_installed(artifact_name(cs), artifacts_toml; platform=cs.host, verbose=true)
 
     # Easy out if we're not Linux with a UserNSRunner trying to use a .squashfs
     if !Sys.islinux() || (preferred_runner() != UserNSRunner &&
@@ -289,12 +289,27 @@ function unmount(cs::CompilerShard, build_prefix::String; verbose::Bool = false,
     end
 end
 
+"""
+    macos_sdk_already_installed()
+
+Returns `true` if any piece of the MacOS SDK is already installed.
+"""
 function macos_sdk_already_installed()
+    # Get all compiler shards we know about
+    css = all_compiler_shards()
+    macos_artifact_names = artifact_name.(filter(cs -> isa(cs.target, MacOS), css))
+
+    host_platform = Linux(:x86_64; libc=:musl)
     artifacts_toml = joinpath(dirname(@__DIR__), "Artifacts.toml")
-    # We just check to see if there are any BaseCompilerShard downloads for
-    # macOS in our downloads directory.  If so, say we have already installed it.
-    files = filter(x -> occursin("BaseCompilerShard", x) || occursin("GCC", x), readdir(storage_dir("downloads")))
-    return !isempty(filter(x -> occursin("-darwin", x), files))
+    macos_artifact_hashes = artifact_hash.(artifact_names, artifacts_toml; platform=host_platform)
+
+    # The Rust shards will return `nothing` above (so we filter them out here) since they
+    # are TECHNICALLY `Linux(:x86_64; libc=:glibc)`-hosted.  Whatever. You need to download
+    # one of the `PlatformSupport` shards for this anyway, so we don't really care.
+    macos_artifact_hashes = filter(x -> x != nothing, macos_artifact_hashes)
+
+    # Return `true` if _any_ of these artifacts exist on-disk:
+    return any(artifact_exists.(macos_artifact_hashes))
 end
 
 function select_gcc_version(p::Platform,
@@ -326,7 +341,7 @@ consists of four shards, but that may not always be the case.
 """
 function choose_shards(p::Platform;
             compilers::Vector{Symbol} = [:c],
-            rootfs_build::VersionNumber=v"2019.10.24",
+            rootfs_build::VersionNumber=v"2019.11.2",
             ps_build::VersionNumber=v"2019.10.11",
             GCC_builds::Vector{VersionNumber}=[v"4.8.5", v"5.2.0", v"6.1.0", v"7.1.0", v"8.1.0"],
             LLVM_build::VersionNumber=v"8.0.0",
@@ -479,10 +494,9 @@ function expand_gfortran_versions(p::Platform)
     libgfortran_versions = [v"3", v"4", v"5"]
     return replace_libgfortran_version.(Ref(p), libgfortran_versions)
 end
-function expand_gfortran_versions(ps::Vector{P}) where {P <: Platform}
-    return collect(Iterators.flatten(expand_gfortran_versions.(ps)))
+function expand_gfortran_versions(ps::Vector{<:Platform})
+    return Platform[p for p in Iterators.flatten(expand_gfortran_versions.(ps))]
 end
-@deprecate expand_gcc_versions expand_gfortran_versions
 
 """
     expand_cxxstring_abis(p::Platform)
@@ -504,8 +518,8 @@ function expand_cxxstring_abis(p::Platform)
     gcc_versions = [:cxx03, :cxx11]
     return replace_cxxstring_abi.(Ref(p), gcc_versions)
 end
-function expand_cxxstring_abis(ps::Vector{P}) where {P <: Platform}
-    return collect(Iterators.flatten(expand_cxxstring_abis.(ps)))
+function expand_cxxstring_abis(ps::Vector{<:Platform})
+    return Platform[p for p in Iterators.flatten(expand_cxxstring_abis.(ps))]
 end
 
 """
