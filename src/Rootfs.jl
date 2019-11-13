@@ -269,7 +269,7 @@ shard archive type and platform result in a no-op.
 """
 function unmount(cs::CompilerShard, build_prefix::String; verbose::Bool = false, fail_on_error::Bool = false)
     # Only try to unmount if it's mounted
-    if is_mounted(cs, build_prefix)
+    if Sys.islinux() && is_mounted(cs, build_prefix)
         mpath = mount_path(cs, build_prefix)
         if verbose
             @debug("Unmounting $(mpath)`")
@@ -301,7 +301,7 @@ function macos_sdk_already_installed()
 
     host_platform = Linux(:x86_64; libc=:musl)
     artifacts_toml = joinpath(dirname(@__DIR__), "Artifacts.toml")
-    macos_artifact_hashes = artifact_hash.(artifact_names, artifacts_toml; platform=host_platform)
+    macos_artifact_hashes = artifact_hash.(macos_artifact_names, artifacts_toml; platform=host_platform)
 
     # The Rust shards will return `nothing` above (so we filter them out here) since they
     # are TECHNICALLY `Linux(:x86_64; libc=:glibc)`-hosted.  Whatever. You need to download
@@ -588,6 +588,20 @@ function shard_mappings(shards::Vector{CompilerShard})
     reverse!(mappings)
     return mappings
 end
+
+function mount_shards(ur::Runner; verbose::Bool = false)
+    mount.(ur.shards, ur.workspace_root; verbose=verbose)
+end
+function unmount_shards(ur::Runner; verbose::Bool = false)
+    unmount.(ur.shards, ur.workspace_root; verbose=verbose)
+
+    # Remove `mounts` if it's empty
+    try
+        rm(joinpath(ur.workspace_root, "mounts"))
+    catch
+    end
+end
+
 
 
 """

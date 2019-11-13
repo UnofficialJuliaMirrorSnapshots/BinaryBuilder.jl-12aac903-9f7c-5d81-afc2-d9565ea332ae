@@ -18,8 +18,10 @@ function github_auth(;allow_anonymous::Bool=true)
         end
     end
 
-    # Also shove this into Registrator, so it uses the same token.
-    Registrator.CommentBot.CONFIG["github"] = Dict("token" => _github_auth[].token)
+    if !isa(_github_auth[], GitHub.AnonymousAuth)
+        # Also shove this into Registrator, so it uses the same token.
+        Registrator.CommentBot.CONFIG["github"] = Dict("token" => _github_auth[].token)
+    end
     return _github_auth[]
 end
 
@@ -44,7 +46,7 @@ function obtain_token(; ins=stdin, outs=stdout, github_api=GitHub.DEFAULT_API)
 
     while true
         user = nonempty_line_prompt("Username", "GitHub username:", ins=ins, outs=outs)
-        password = nonempty_line_prompt("Password", "GitHub password:"; ins=ins, outs=outs)
+        password = nonempty_line_prompt("Password", "GitHub password:"; ins=ins, outs=outs, echo=false)
 
         # Shuffle this junk off to the GH API
         headers = Dict{String, String}("User-Agent"=>"BinaryBuilder-jl")
