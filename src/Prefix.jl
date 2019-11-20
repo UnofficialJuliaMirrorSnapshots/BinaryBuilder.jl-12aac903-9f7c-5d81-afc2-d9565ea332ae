@@ -206,7 +206,13 @@ function symlink_tree(src::AbstractString, dest::AbstractString)
     for (root, dirs, files) in walkdir(src)
         # Create all directories
         for d in dirs
-            mkpath(joinpath(dest, relpath(root, src), d))
+            # If `d` is itself a symlink, recreate that symlink
+            d_path = joinpath(root, d)
+            if islink(d_path)
+                symlink(readlink(d_path), joinpath(dest, relpath(root, src), d))
+            else
+                mkpath(joinpath(dest, relpath(root, src), d))
+            end
         end
 
         # Symlink all files
@@ -214,13 +220,20 @@ function symlink_tree(src::AbstractString, dest::AbstractString)
             src_file = joinpath(root, f)
             dest_file = joinpath(dest, relpath(root, src), f)
             if isfile(dest_file)
+                # Find source artifact that this pre-existent destination file belongs to
                 dest_artifact_source = abspath(dest_file)
                 while occursin(".artifacts", dest_artifact_source) && basename(dirname(dest_artifact_source)) != ".artifacts"
                     dest_artifact_source = dirname(dest_artifact_source)
                 end
                 @warn("Symlink $(f) from artifact $(basename(src)) already exists in artifact $(basename(dest_artifact_source))")
             else
-                symlink(relpath(src_file, dirname(dest_file)), dest_file)
+                # If it's already a symlink, copy over the exact symlink target
+                if islink(src_file)
+                    symlink(readlink(src_file), dest_file)
+                else
+                    # Otherwise, point it at the proper location
+                    symlink(relpath(src_file, dirname(dest_file)), dest_file)
+                end
             end
         end
     end
@@ -228,7 +241,15 @@ end
 
 function unsymlink_tree(src::AbstractString, dest::AbstractString)
     for (root, dirs, files) in walkdir(src)
-        # Unsymlink all files, directories will be culled in audit
+        # Unsymlink all symlinked directories, non-symlink directories will be culled in audit.
+        for d in dirs
+            dest_dir = joinpath(dest, relpath(root, src), d)
+            if islink(dest_dir)
+                rm(dest_dir)
+            end
+        end
+
+        # Unsymlink all symlinked files
         for f in files
             dest_file = joinpath(dest, relpath(root, src), f)
             if islink(dest_file)
